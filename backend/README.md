@@ -1,27 +1,39 @@
 # Backend — Reconocimiento de Placas
 
-FastAPI + SQLAlchemy + Alembic + PostgreSQL + OpenCV + Tesseract OCR.
+FastAPI + SQLAlchemy + Alembic + PostgreSQL + OpenCV + EasyOCR.
 
 ## Pipeline de visión por computador
 
 ```
 imagen → validación (¿es una imagen real?) → preprocesamiento (resize, gris, CLAHE)
-       → detección (contornos + aspect ratio típico de placa)
-       → recorte + corrección (deskew, binarizado)
-       → OCR (Tesseract, whitelist alfanumérico)
-       → normalización de texto (mayúsculas, solo A-Z0-9, corrección de confusiones O/0 I/1...)
-       → validación de plausibilidad → resultado
+       → detección (varios candidatos: color amarillo/blanco + contornos por bordes)
+       → por cada candidato: recorte + corrección (deskew, upscale/nitidez)
+       → OCR (EasyOCR, whitelist alfanumérico, cada bloque de texto que encuentre)
+       → normalización de texto (mayúsculas, solo A-Z0-9, formato colombiano
+         LLLNNN/LLLNNL con corrección de confusiones O/0 I/1 S/5 B/8 G/6 Z/2
+         según la posición esperada)
+       → se descartan candidatos que se solapan (misma placa física) y se
+         devuelve un resultado por cada placa distinta que sí se pudo leer
 ```
 
-Si no se detecta ninguna región de placa, el `status` es exactamente
-`"no_plate_detected"`. El sistema nunca inventa un texto de placa: si el OCR no
-logra leer nada sobre una región sí detectada, el resultado es `status: "error"`
-con `error_message` explicando por qué.
+Una foto puede tener **más de una placa** (varios carros): el pipeline
+devuelve un resultado por cada una que logre leerse en formato colombiano
+válido, no solo la mejor. Si no se detecta ninguna región de placa, el
+`status` es exactamente `"no_plate_detected"`. El sistema nunca inventa un
+texto de placa: si el OCR no logra leer nada sobre una región sí detectada,
+el resultado es `status: "error"` con `error_message` explicando por qué.
 
-Módulos en `app/cv/`: `ImagePreprocessor`, `PlateDetector`, `PlateCropper`
-(recorte/deskew/binarizado — el paso de "corrección" del pipeline),
-`OCRService`, `PlateNormalizer` (normalización del texto post-OCR),
-`ConfidenceEstimator`, `PlateRecognitionService` (orquesta todo).
+La caja (`detected_bbox`) que se devuelve es la posición exacta del texto que
+reportó EasyOCR (traducida a las coordenadas de la imagen original), no la
+región aproximada que usó el detector para encontrar la placa — por eso queda
+ajustada al texto y no a todo el parachoques/parrilla alrededor.
+
+Módulos en `app/cv/`: `ImagePreprocessor`, `PlateDetector` (candidatos por
+color + por bordes), `PlateCropper` (recorte/deskew/upscale — el paso de
+"corrección" del pipeline), `OCRService` (EasyOCR), `PlateNormalizer`
+(normalización + ajuste al formato colombiano), `ConfidenceEstimator`,
+`PlateRecognitionService` (orquesta todo, y decide si una foto tiene una o
+varias placas).
 
 ## Storage
 
@@ -35,7 +47,7 @@ credenciales hardcodeadas).
 | Método | Ruta | Descripción |
 |---|---|---|
 | GET | `/health` | `{"status": "ok"}` |
-| POST | `/recognitions` | multipart `image` → corre el pipeline, guarda y devuelve el `Recognition` |
+| POST | `/recognitions` | multipart `image` → corre el pipeline y devuelve un **array** de `Recognition`, uno por cada placa encontrada en la foto (casi siempre uno solo) |
 | GET | `/recognitions?skip=&limit=&status=` | lista paginada |
 | GET | `/recognitions/{id}` | detalle |
 | DELETE | `/recognitions/{id}` | borra el registro y sus imágenes |
@@ -51,8 +63,10 @@ alembic upgrade head
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Requiere `tesseract-ocr` instalado en el sistema (`brew install tesseract` en
-macOS; en Docker ya se instala en el `Dockerfile`).
+La primera vez que corre, EasyOCR descarga sus modelos (~100MB) a
+`~/.EasyOCR`; el `Dockerfile` los baja en build time para que el contenedor
+no lo haga en el primer request. No requiere nada del sistema aparte de
+`libgl1`/`libglib2.0-0` (ya en el `Dockerfile`, para OpenCV).
 
 ## Docker Compose
 

@@ -1,9 +1,9 @@
 # Reconocimiento de Placas — proyecto de Ciencia de Datos
 
 Aplicación web para capturar una foto de un vehículo desde el celular, detectar la
-placa, leerla con OCR y guardar el historial. Pensada para desplegarse en AWS
-(EC2 + RDS/Postgres + S3), pero funciona 100% en local con Docker Compose mientras
-se provisiona la infraestructura.
+placa (una o varias, si la foto tiene más de un carro), leerla con OCR y guardar
+el historial. Pensada para desplegarse en AWS (EC2 + RDS/Postgres + S3), pero
+funciona 100% en local con Docker Compose mientras se provisiona la infraestructura.
 
 ## Arquitectura
 
@@ -32,8 +32,10 @@ interna de Docker.
   desde el navegador móvil sin instalar nada).
 - **Backend**: FastAPI + SQLAlchemy + Alembic + Pydantic.
 - **Base de datos**: PostgreSQL.
-- **Visión por computador**: OpenCV (detección de la región de la placa) +
-  Tesseract OCR (lectura de caracteres).
+- **Visión por computador**: OpenCV (detección de la región de la placa, por
+  color y por bordes) + EasyOCR (lectura de caracteres) + corrección al
+  formato colombiano de placas (3 letras + 3 dígitos, o 3 letras + 2 dígitos +
+  1 letra en motos).
 - **Infraestructura**: Docker, Docker Compose, Nginx como gateway/reverse proxy.
 
 ## Correr todo con Docker Compose (recomendado para probar end-to-end)
@@ -55,6 +57,13 @@ cd frontend
 npm install
 npm run dev -- --host      # --host expone la IP de tu LAN para probar desde el celular
 ```
+El servidor de dev sirve por **HTTPS con certificado autofirmado** (necesario
+para que el celular te deje usar la cámara fuera de `localhost`) — el
+navegador va a mostrar una advertencia de seguridad la primera vez, es
+esperado: "Avanzado" → "Continuar". `vite.config.ts` además hace de proxy de
+`/api` y `/media` hacia `http://127.0.0.1:8000`, así que en dev puedes dejar
+`VITE_API_URL` vacío en `frontend/.env.local` y todo funciona en el mismo
+origen aunque el backend corra en HTTP plano.
 
 Backend (requiere Postgres corriendo, p.ej. `docker compose up db`):
 ```bash
@@ -64,9 +73,6 @@ pip install -r requirements.txt
 alembic upgrade head
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-
-Configurar `frontend/.env` con `VITE_API_URL=http://<ip-de-tu-máquina>:8000` para
-que el celular (que no entiende "localhost") le hable directo al backend en dev.
 
 ## Variables de entorno
 
