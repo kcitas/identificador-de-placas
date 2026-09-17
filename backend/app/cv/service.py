@@ -14,6 +14,12 @@ from app.storage.base import StorageService
 __all__ = ["InvalidImageError", "PlateRecognitionService", "PipelineResult"]
 
 OVERLAP_THRESHOLD = 0.4  # two reads this close are the same physical plate, not two different ones
+# A 6-character plate code, as a text line, is never anywhere close to square —
+# this catches false positives where some unrelated text elsewhere in the photo
+# (a UI icon row, a logo, a sign) happens to OCR into a valid-shaped string.
+MIN_TEXT_ASPECT_RATIO = 1.6
+MAX_TEXT_ASPECT_RATIO = 7.0
+MULTI_PLATE_MIN_CONFIDENCE = 0.9  # only for reporting >1 plate — see _run_pipeline
 
 
 class PipelineResult:
@@ -100,6 +106,17 @@ class PlateRecognitionService:
         # one, and within a tier the most confident OCR read wins.
         reads = [self._read_candidate(image, detection) for detection in candidates]
         plate_reads = self._dedupe_by_overlap([r for r in reads if r["colombian_format"]])
+
+        if len(plate_reads) > 1:
+            # Claiming "this photo has several distinct plates" is a stronger
+            # claim than reporting just one — hold it to a higher bar so an
+            # unrelated bit of text elsewhere in the photo (a logo, a sign, a
+            # UI element) that happens to read as a plausible plate doesn't
+            # get reported as a second vehicle. A single confident read never
+            # needs this extra bar.
+            plate_reads = [r for r in plate_reads if r["ocr_confidence"] >= MULTI_PLATE_MIN_CONFIDENCE] or [
+                max(plate_reads, key=self._rank)
+            ]
 
         if plate_reads:
             # One or more plates read cleanly — a single shared annotated image
@@ -191,12 +208,19 @@ class PlateRecognitionService:
                 "normalized": normalized,
                 "ocr_confidence": ocr_result.confidence,
                 "plausible": self.normalizer.is_plausible(normalized),
-                "colombian_format": self.normalizer.is_colombian_format(normalized),
+                "colombian_format": self.normalizer.is_colombian_format(normalized) and self._is_plate_shaped(bbox),
             }
             if best is None or self._rank(candidate_read) > self._rank(best):
                 best = candidate_read
 
         return best
+
+    @staticmethod
+    def _is_plate_shaped(bbox: BBox) -> bool:
+        if bbox.height == 0:
+            return False
+        aspect_ratio = bbox.width / bbox.height
+        return MIN_TEXT_ASPECT_RATIO <= aspect_ratio <= MAX_TEXT_ASPECT_RATIO
 
     @staticmethod
     def _translate_bbox(local_bbox, x0: int, y0: int, scale: float) -> BBox:
