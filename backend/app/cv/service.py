@@ -5,13 +5,15 @@ import cv2
 from app.config import get_settings
 from app.cv.confidence import ConfidenceEstimator
 from app.cv.cropper import PlateCropper
-from app.cv.detector import PlateDetector
+from app.cv.detector import BBox, PlateDetector
 from app.cv.normalizer import PlateNormalizer
-from app.cv.ocr import OCRResult, OCRService
+from app.cv.ocr import LocalBBox, OCRResult, OCRService
 from app.cv.preprocessor import ImagePreprocessor, InvalidImageError
 from app.storage.base import StorageService
 
 __all__ = ["InvalidImageError", "PlateRecognitionService", "PipelineResult"]
+
+OVERLAP_THRESHOLD = 0.4  # two reads this close are the same physical plate, not two different ones
 
 
 class PipelineResult:
@@ -48,7 +50,9 @@ class PlateRecognitionService:
         self.confidence_estimator = ConfidenceEstimator()
         self.threshold = get_settings().low_confidence_threshold
 
-    def process(self, data: bytes, filename: str) -> PipelineResult:
+    def process(self, data: bytes, filename: str) -> list[PipelineResult]:
+        """Returns one PipelineResult per plate found in the photo (usually
+        one, but a photo can show more than one vehicle/plate)."""
         started = time.monotonic()
 
         image = self.preprocessor.decode(data)  # raises InvalidImageError -> handled by the router as 422
@@ -58,45 +62,60 @@ class PlateRecognitionService:
         try:
             return self._run_pipeline(image, original_url, started)
         except Exception as exc:  # unexpected CV/OCR failure on a real, decodable image
-            return PipelineResult(
-                status="error",
-                plate_text=None,
-                confidence=None,
-                original_image_url=original_url,
-                processed_image_url=None,
-                detected_bbox=None,
-                processing_time_ms=self._elapsed_ms(started),
-                error_message=str(exc),
-            )
+            return [
+                PipelineResult(
+                    status="error",
+                    plate_text=None,
+                    confidence=None,
+                    original_image_url=original_url,
+                    processed_image_url=None,
+                    detected_bbox=None,
+                    processing_time_ms=self._elapsed_ms(started),
+                    error_message=str(exc),
+                )
+            ]
 
-    def _run_pipeline(self, image, original_url: str, started: float) -> PipelineResult:
+    def _run_pipeline(self, image, original_url: str, started: float) -> list[PipelineResult]:
         gray = self.preprocessor.enhance_gray(image)
-        candidates = self.detector.detect_candidates(image, gray)
+        candidates = self.detector.detect_candidates(image, gray, top_k=8)
 
         if not candidates:
-            return PipelineResult(
-                status="no_plate_detected",
-                plate_text=None,
-                confidence=None,
-                original_image_url=original_url,
-                processed_image_url=None,
-                detected_bbox=None,
-                processing_time_ms=self._elapsed_ms(started),
-                error_message=None,
-            )
+            return [
+                PipelineResult(
+                    status="no_plate_detected",
+                    plate_text=None,
+                    confidence=None,
+                    original_image_url=original_url,
+                    processed_image_url=None,
+                    detected_bbox=None,
+                    processing_time_ms=self._elapsed_ms(started),
+                    error_message=None,
+                )
+            ]
 
         # Geometry alone can't tell a plate apart from a look-alike region nearby
         # (e.g. a badge or logo that also happens to read as 5-8 characters) —
-        # read every candidate and rank the results: an exact Colombian-shaped
-        # read (LLLNNN/LLLNNL) always beats a merely-plausible one, and within
-        # a tier the most confident OCR read wins.
+        # read every candidate region and rank its own best read: an exact
+        # Colombian-shaped read (LLLNNN/LLLNNL) always beats a merely-plausible
+        # one, and within a tier the most confident OCR read wins.
         reads = [self._read_candidate(image, detection) for detection in candidates]
+        plate_reads = self._dedupe_by_overlap([r for r in reads if r["colombian_format"]])
+
+        if plate_reads:
+            # One or more plates read cleanly — a single shared annotated image
+            # (every found plate boxed) rather than the coarse candidate's box.
+            processed_url = self._save_annotated(image, [r["bbox"] for r in plate_reads], original_url)
+            return [self._build_result(r, original_url, processed_url, started) for r in plate_reads]
+
+        # Nothing hit the strict Colombian shape — fall back to the single best
+        # attempt overall so the user still sees *something* (low_confidence or
+        # a plain error), same as when there's clearly only one plate to find.
         chosen = max(reads, key=self._rank)
+        processed_url = self._save_annotated(image, [chosen["bbox"]], original_url)
+        return [self._build_result(chosen, original_url, processed_url, started)]
 
-        detection = chosen["detection"]
-        normalized = chosen["normalized"]
-        processed_url = self._save_annotated(image, detection.bbox, original_url)
-
+    def _build_result(self, read: dict, original_url: str, processed_url: str, started: float) -> PipelineResult:
+        normalized = read["normalized"]
         if not normalized:
             return PipelineResult(
                 status="error",
@@ -104,16 +123,16 @@ class PlateRecognitionService:
                 confidence=None,
                 original_image_url=original_url,
                 processed_image_url=processed_url,
-                detected_bbox=detection.bbox.as_dict(),
+                detected_bbox=read["bbox"].as_dict(),
                 processing_time_ms=self._elapsed_ms(started),
                 error_message="No se pudieron leer caracteres en la región de placa detectada.",
             )
 
         confidence = self.confidence_estimator.estimate(
-            detection_score=detection.score,
-            ocr_confidence=chosen["ocr_confidence"],
-            is_plausible=chosen["plausible"],
-            is_colombian_format=chosen["colombian_format"],
+            detection_score=read["detection"].score,
+            ocr_confidence=read["ocr_confidence"],
+            is_plausible=read["plausible"],
+            is_colombian_format=read["colombian_format"],
         )
         status = self.confidence_estimator.status_for(confidence, self.threshold)
 
@@ -123,15 +142,15 @@ class PlateRecognitionService:
             confidence=confidence,
             original_image_url=original_url,
             processed_image_url=processed_url,
-            detected_bbox=detection.bbox.as_dict(),
+            detected_bbox=read["bbox"].as_dict(),
             processing_time_ms=self._elapsed_ms(started),
             error_message=None,
         )
 
     def _read_candidate(self, image, detection) -> dict:
-        crop = self.cropper.crop(image, detection.bbox)
+        crop, x0, y0 = self.cropper.crop(image, detection.bbox)
         crop = self.cropper.deskew(crop)
-        crop = self.cropper.upscale_for_ocr(crop)
+        crop, scale = self.cropper.upscale_for_ocr(crop)
 
         # EasyOCR does its own preprocessing internally — feed it the
         # deskewed/upscaled crop directly rather than a binarized version.
@@ -143,7 +162,11 @@ class PlateRecognitionService:
         # whichever turns out plate-shaped.
         ocr_results = self.ocr.read(crop)
         pairs = [
-            OCRResult(text=a.text + b.text, confidence=(a.confidence + b.confidence) / 2)
+            OCRResult(
+                text=a.text + b.text,
+                confidence=(a.confidence + b.confidence) / 2,
+                bbox=self._union_bbox(a.bbox, b.bbox),
+            )
             for i, a in enumerate(ocr_results)
             for j, b in enumerate(ocr_results)
             if i != j
@@ -156,8 +179,15 @@ class PlateRecognitionService:
             if fitted:
                 normalized = fitted
 
+            # EasyOCR's own text box, translated back to the original image's
+            # coordinates — tight around the actual characters, unlike the
+            # coarse contour/color box the detector used just to find this
+            # region in the first place.
+            bbox = self._translate_bbox(ocr_result.bbox, x0, y0, scale) if ocr_result.bbox else detection.bbox
+
             candidate_read = {
                 "detection": detection,
+                "bbox": bbox,
                 "normalized": normalized,
                 "ocr_confidence": ocr_result.confidence,
                 "plausible": self.normalizer.is_plausible(normalized),
@@ -169,24 +199,65 @@ class PlateRecognitionService:
         return best
 
     @staticmethod
+    def _translate_bbox(local_bbox, x0: int, y0: int, scale: float) -> BBox:
+        return BBox(
+            x=int(local_bbox.x / scale) + x0,
+            y=int(local_bbox.y / scale) + y0,
+            width=int(local_bbox.width / scale),
+            height=int(local_bbox.height / scale),
+        )
+
+    @staticmethod
+    def _union_bbox(a, b):
+        if a is None or b is None:
+            return a or b
+        x0, y0 = min(a.x, b.x), min(a.y, b.y)
+        x1, y1 = max(a.x + a.width, b.x + b.width), max(a.y + a.height, b.y + b.height)
+        return LocalBBox(x=x0, y=y0, width=x1 - x0, height=y1 - y0)
+
+    @staticmethod
     def _rank(read: dict) -> tuple[int, float]:
         tier = 2 if read["colombian_format"] else 1 if read["plausible"] else 0
         return (tier, read["ocr_confidence"])
 
-    def _save_annotated(self, image, bbox, original_url: str) -> str:
+    @staticmethod
+    def _dedupe_by_overlap(reads: list[dict]) -> list[dict]:
+        """Two candidate regions can both land on the same physical plate
+        (e.g. the color and edge detectors both find it) — keep the
+        higher-ranked read of each overlapping group so one real plate
+        doesn't get reported twice."""
+        kept: list[dict] = []
+        for read in sorted(reads, key=PlateRecognitionService._rank, reverse=True):
+            if not any(PlateRecognitionService._iou(read["bbox"], k["bbox"]) > OVERLAP_THRESHOLD for k in kept):
+                kept.append(read)
+        return kept
+
+    @staticmethod
+    def _iou(a: BBox, b: BBox) -> float:
+        ax2, ay2 = a.x + a.width, a.y + a.height
+        bx2, by2 = b.x + b.width, b.y + b.height
+        ix1, iy1 = max(a.x, b.x), max(a.y, b.y)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        if ix2 <= ix1 or iy2 <= iy1:
+            return 0.0
+        intersection = (ix2 - ix1) * (iy2 - iy1)
+        union = a.width * a.height + b.width * b.height - intersection
+        return intersection / union if union else 0.0
+
+    def _save_annotated(self, image, bboxes: list, original_url: str) -> str:
         annotated = image.copy()
-        cv2.rectangle(
-            annotated,
-            (bbox.x, bbox.y),
-            (bbox.x + bbox.width, bbox.y + bbox.height),
-            (0, 220, 100),
-            3,
-        )
+        for bbox in bboxes:
+            cv2.rectangle(
+                annotated,
+                (bbox.x, bbox.y),
+                (bbox.x + bbox.width, bbox.y + bbox.height),
+                (0, 220, 100),
+                3,
+            )
         ok, buffer = cv2.imencode(".jpg", annotated)
         if not ok:
             return original_url
-        filename = "processed.jpg"
-        return self.storage.save(buffer.tobytes(), filename)
+        return self.storage.save(buffer.tobytes(), "processed.jpg")
 
     @staticmethod
     def _elapsed_ms(started: float) -> int:

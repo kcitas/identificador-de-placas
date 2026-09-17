@@ -7,9 +7,21 @@ ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 @dataclass
+class LocalBBox:
+    """Pixel box within the crop that was OCR'd — not yet translated to the
+    original image's coordinates."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+@dataclass
 class OCRResult:
     text: str
     confidence: float  # 0-1
+    bbox: LocalBBox | None = None  # None for the empty-read sentinel
 
 
 @lru_cache
@@ -39,4 +51,13 @@ class OCRService:
         results = reader.readtext(image, allowlist=ALLOWLIST)
         if not results:
             return [OCRResult(text="", confidence=0.0)]
-        return [OCRResult(text=text, confidence=round(float(conf), 3)) for _, text, conf in results]
+
+        ocr_results = []
+        for polygon, text, conf in results:
+            xs = [p[0] for p in polygon]
+            ys = [p[1] for p in polygon]
+            bbox = LocalBBox(
+                x=int(min(xs)), y=int(min(ys)), width=int(max(xs) - min(xs)), height=int(max(ys) - min(ys))
+            )
+            ocr_results.append(OCRResult(text=text, confidence=round(float(conf), 3), bbox=bbox))
+        return ocr_results

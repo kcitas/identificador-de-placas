@@ -43,7 +43,9 @@ export const api = {
   createRecognition: (image: File | Blob) => {
     const form = new FormData()
     form.append('image', image, image instanceof File ? image.name : 'capture.jpg')
-    return request<Recognition>('/api/v1/recognitions', { method: 'POST', body: form })
+    // The pipeline returns one Recognition per plate found in the photo —
+    // almost always one, but a shot with more than one vehicle can yield several.
+    return request<Recognition[]>('/api/v1/recognitions', { method: 'POST', body: form })
   },
 
   listRecognitions: (params: { skip?: number; limit?: number; status?: RecognitionStatus } = {}) => {

@@ -14,7 +14,7 @@ export function Scanner() {
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null)
   const [capturedUrl, setCapturedUrl] = useState<string | null>(null)
-  const [result, setResult] = useState<Recognition | null>(null)
+  const [results, setResults] = useState<Recognition[]>([])
   const [uploadError, setUploadError] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -94,8 +94,8 @@ export function Scanner() {
     setStage('uploading')
     setUploadError(null)
     try {
-      const recognition = await api.createRecognition(capturedBlob)
-      setResult(recognition)
+      const recognitions = await api.createRecognition(capturedBlob)
+      setResults(recognitions)
       setStage('result')
     } catch (err) {
       setUploadError(err instanceof ApiError ? err.message : 'Error inesperado al procesar la imagen.')
@@ -107,7 +107,7 @@ export function Scanner() {
     if (capturedUrl) URL.revokeObjectURL(capturedUrl)
     setCapturedBlob(null)
     setCapturedUrl(null)
-    setResult(null)
+    setResults([])
     setUploadError(null)
     setStage('camera')
   }
@@ -215,52 +215,59 @@ export function Scanner() {
         </div>
       )}
 
-      {stage === 'result' && result && (
+      {stage === 'result' && results.length > 0 && (
         <div>
           <BBoxImage
-            src={resolveMediaUrl(result.processed_image_url ?? result.original_image_url) ?? ''}
-            bbox={result.detected_bbox}
+            src={resolveMediaUrl(results[0].processed_image_url ?? results[0].original_image_url) ?? ''}
+            bbox={results.length === 1 ? results[0].detected_bbox : null}
             alt="Resultado del reconocimiento"
           />
 
-          <div className="mt-4 rounded-2xl border border-(--color-border) bg-(--color-surface) p-4">
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-3xl font-extrabold tracking-widest">
-                {result.plate_text ?? 'No detectada'}
-              </span>
-              <StatusBadge status={result.status} />
-            </div>
-
-            {result.status === 'no_plate_detected' && (
-              <p className="mt-3 text-sm text-(--color-text-muted)">
-                No se detectó ninguna placa en la imagen. Intenta acercarte más o mejorar la iluminación.
-              </p>
-            )}
-            {result.status === 'error' && result.error_message && (
-              <div className="mt-3">
-                <ErrorBanner message={result.error_message} />
-              </div>
-            )}
-
-            <div className="mt-4">
-              <ConfidenceBar value={result.confidence} />
-            </div>
-
-            <p className="mt-3 text-xs text-(--color-text-muted)">
-              Procesado en {result.processing_time_ms} ms
+          {results.length > 1 && (
+            <p className="mt-3 text-sm text-(--color-text-muted)">
+              Se encontraron {results.length} placas en la foto.
             </p>
+          )}
+
+          <div className="mt-4 space-y-3">
+            {results.map((result) => (
+              <div key={result.id} className="rounded-2xl border border-(--color-border) bg-(--color-surface) p-4">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-3xl font-extrabold tracking-widest">
+                    {result.plate_text ?? 'No detectada'}
+                  </span>
+                  <StatusBadge status={result.status} />
+                </div>
+
+                {result.status === 'no_plate_detected' && (
+                  <p className="mt-3 text-sm text-(--color-text-muted)">
+                    No se detectó ninguna placa en la imagen. Intenta acercarte más o mejorar la iluminación.
+                  </p>
+                )}
+                {result.status === 'error' && result.error_message && (
+                  <div className="mt-3">
+                    <ErrorBanner message={result.error_message} />
+                  </div>
+                )}
+
+                <div className="mt-4">
+                  <ConfidenceBar value={result.confidence} />
+                </div>
+
+                <div className="mt-3 flex items-center justify-between text-xs text-(--color-text-muted)">
+                  <span>Procesado en {result.processing_time_ms} ms</span>
+                  <Link to={`/recognitions/${result.id}`} className="font-medium text-(--color-accent)">
+                    Ver detalle →
+                  </Link>
+                </div>
+              </div>
+            ))}
           </div>
 
-          <div className="mt-5 flex gap-3">
-            <Link
-              to={`/recognitions/${result.id}`}
-              className="flex-1 rounded-xl border border-(--color-border) bg-(--color-surface) py-3 text-center font-medium transition hover:bg-(--color-surface-2)"
-            >
-              Ver detalle
-            </Link>
+          <div className="mt-5">
             <button
               onClick={handleScanAnother}
-              className="flex-1 rounded-xl bg-(--color-accent) py-3 font-semibold text-(--color-bg) transition active:scale-[0.98]"
+              className="w-full rounded-xl bg-(--color-accent) py-3 font-semibold text-(--color-bg) transition active:scale-[0.98]"
             >
               Escanear otra
             </button>

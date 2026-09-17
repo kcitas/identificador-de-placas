@@ -18,35 +18,42 @@ def get_service() -> PlateRecognitionService:
     return PlateRecognitionService(storage=get_storage())
 
 
-@router.post("", response_model=RecognitionOut, status_code=201)
+@router.post("", response_model=list[RecognitionOut], status_code=201)
 async def create_recognition(
     image: UploadFile,
     db: Session = Depends(get_db),
     service: PlateRecognitionService = Depends(get_service),
 ):
+    """Runs the CV+OCR pipeline and returns one Recognition per plate found in
+    the photo (almost always one, but a shot with more than one vehicle can
+    yield several — each is stored as its own row, sharing the same photo)."""
     data = await image.read()
     if not data:
         raise HTTPException(status_code=422, detail="El archivo de imagen está vacío.")
 
     try:
-        result = service.process(data, image.filename or "capture.jpg")
+        results = service.process(data, image.filename or "capture.jpg")
     except InvalidImageError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    recognition = Recognition(
-        plate_text=result.plate_text,
-        confidence=result.confidence,
-        original_image_url=result.original_image_url,
-        processed_image_url=result.processed_image_url,
-        detected_bbox=result.detected_bbox,
-        processing_time_ms=result.processing_time_ms,
-        status=result.status,
-        error_message=result.error_message,
-    )
-    db.add(recognition)
+    recognitions = [
+        Recognition(
+            plate_text=result.plate_text,
+            confidence=result.confidence,
+            original_image_url=result.original_image_url,
+            processed_image_url=result.processed_image_url,
+            detected_bbox=result.detected_bbox,
+            processing_time_ms=result.processing_time_ms,
+            status=result.status,
+            error_message=result.error_message,
+        )
+        for result in results
+    ]
+    db.add_all(recognitions)
     db.commit()
-    db.refresh(recognition)
-    return recognition
+    for recognition in recognitions:
+        db.refresh(recognition)
+    return recognitions
 
 
 @router.get("", response_model=RecognitionListOut)
