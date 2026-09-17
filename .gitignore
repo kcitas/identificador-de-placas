@@ -1,0 +1,17 @@
+# Environment files with real values — never commit
+.env
+backend/.env
+frontend/.env.local
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/media/
+
+# Node (frontend has its own .gitignore too)
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store

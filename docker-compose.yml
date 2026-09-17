@@ -1,0 +1,66 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-plates}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-plates}
+      POSTGRES_DB: ${POSTGRES_DB:-platesdb}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plates} -d ${POSTGRES_DB:-platesdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plates}:${POSTGRES_PASSWORD:-plates}@db:5432/${POSTGRES_DB:-platesdb}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - media_data:/app/media
+    networks: [internal]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks: [internal]
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      BACKEND_HOST: backend
+      BACKEND_PORT: 8000
+      FRONTEND_HOST: frontend
+      FRONTEND_PORT: 80
+    depends_on:
+      - backend
+      - frontend
+    networks: [internal]
+
+networks:
+  internal:
+
+volumes:
+  db_data:
+  media_data:
