@@ -197,9 +197,8 @@ class PlateRecognitionService:
                 normalized = fitted
 
             # EasyOCR's own text box, translated back to the original image's
-            # coordinates — tight around the actual characters, unlike the
-            # coarse contour/color box the detector used just to find this
-            # region in the first place.
+            # coordinates — tighter around the actual characters than the
+            # YOLO box, which just located the plate region in the first place.
             bbox = self._translate_bbox(ocr_result.bbox, x0, y0, scale) if ocr_result.bbox else detection.bbox
 
             candidate_read = {
@@ -246,8 +245,8 @@ class PlateRecognitionService:
 
     @staticmethod
     def _dedupe_by_overlap(reads: list[dict]) -> list[dict]:
-        """Two candidate regions can both land on the same physical plate
-        (e.g. the color and edge detectors both find it) — keep the
+        """Two YOLO candidate boxes can both land on the same physical plate
+        (overlapping detections above the confidence threshold) — keep the
         higher-ranked read of each overlapping group so one real plate
         doesn't get reported twice."""
         kept: list[dict] = []

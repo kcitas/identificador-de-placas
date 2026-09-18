@@ -1,12 +1,12 @@
 # Backend — Reconocimiento de Placas
 
-FastAPI + SQLAlchemy + Alembic + PostgreSQL + OpenCV + EasyOCR.
+FastAPI + SQLAlchemy + Alembic + PostgreSQL + YOLOv8 + EasyOCR.
 
 ## Pipeline de visión por computador
 
 ```
 imagen → validación (¿es una imagen real?) → preprocesamiento (resize, gris, CLAHE)
-       → detección (varios candidatos: color amarillo/blanco + contornos por bordes)
+       → detección (YOLOv8 pre-entrenado para placas, varios candidatos por confianza)
        → por cada candidato: recorte + corrección (deskew, upscale/nitidez)
        → OCR (EasyOCR, whitelist alfanumérico, cada bloque de texto que encuentre)
        → normalización de texto (mayúsculas, solo A-Z0-9, formato colombiano
@@ -28,12 +28,14 @@ reportó EasyOCR (traducida a las coordenadas de la imagen original), no la
 región aproximada que usó el detector para encontrar la placa — por eso queda
 ajustada al texto y no a todo el parachoques/parrilla alrededor.
 
-Módulos en `app/cv/`: `ImagePreprocessor`, `PlateDetector` (candidatos por
-color + por bordes), `PlateCropper` (recorte/deskew/upscale — el paso de
-"corrección" del pipeline), `OCRService` (EasyOCR), `PlateNormalizer`
-(normalización + ajuste al formato colombiano), `ConfidenceEstimator`,
-`PlateRecognitionService` (orquesta todo, y decide si una foto tiene una o
-varias placas).
+Módulos en `app/cv/`: `ImagePreprocessor`, `PlateDetector` (YOLOv8
+pre-entrenado, un solo modelo/clase `license_plate`, pesos descargados de
+[Koushim/yolov8-license-plate-detection](https://huggingface.co/Koushim/yolov8-license-plate-detection)
+la primera vez que corre — ver `MODEL_REPO_ID` en `app/cv/detector.py`),
+`PlateCropper` (recorte/deskew/upscale — el paso de "corrección" del
+pipeline), `OCRService` (EasyOCR), `PlateNormalizer` (normalización + ajuste
+al formato colombiano), `ConfidenceEstimator`, `PlateRecognitionService`
+(orquesta todo, y decide si una foto tiene una o varias placas).
 
 ## Storage
 
@@ -64,9 +66,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 La primera vez que corre, EasyOCR descarga sus modelos (~100MB) a
-`~/.EasyOCR`; el `Dockerfile` los baja en build time para que el contenedor
-no lo haga en el primer request. No requiere nada del sistema aparte de
-`libgl1`/`libglib2.0-0` (ya en el `Dockerfile`, para OpenCV).
+`~/.EasyOCR` y el detector YOLOv8 descarga sus pesos (~6MB) a
+`app/cv/weights/` (gitignored); el `Dockerfile` los baja en build time para
+que el contenedor no lo haga en el primer request. No requiere nada del
+sistema aparte de `libgl1`/`libglib2.0-0` (ya en el `Dockerfile`, para
+OpenCV).
 
 ## Docker Compose
 

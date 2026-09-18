@@ -10,12 +10,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# EasyOCR downloads its detection/recognition weights on first use — bake them
-# into the image at build time so the container doesn't fetch ~100MB from the
-# network on its first request in production.
+# EasyOCR and the YOLOv8 plate detector each download their weights on first
+# use — bake them into the image at build time so the container doesn't fetch
+# them from the network on its first request in production.
 RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False)"
 
 COPY . .
+RUN python -c "from app.cv.detector import _get_model; _get_model()"
 
 RUN mkdir -p /app/media
 EXPOSE 8000
