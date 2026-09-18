@@ -15,8 +15,10 @@ funciona 100% en local con Docker Compose mientras se provisiona la infraestruct
               ┌─────────────┼─────────────┐
               ▼                           ▼
       / → frontend:80              /api/, /media/ → backend:8000
-      (React/Vite build,           (FastAPI, pipeline CV+OCR,
+      (build web de Expo,          (FastAPI, pipeline YOLO+OCR,
        servido por nginx)           sirve imágenes guardadas)
+
+   app móvil (Expo Go / APK)  ───▶  /api/, /media/ del mismo gateway
                                             │
                                             ▼
                                      db (PostgreSQL)
@@ -28,12 +30,13 @@ interna de Docker.
 
 ## Stack
 
-- **Frontend**: React + TypeScript + Vite + Tailwind CSS, PWA (instalable, funciona
-  desde el navegador móvil sin instalar nada).
+- **Frontend**: Expo (React Native) + TypeScript + Expo Router. App móvil para
+  Android/iOS (en desarrollo se prueba con Expo Go) que también compila a web
+  con el mismo código — ese build web es lo que sirve nginx en Docker.
 - **Backend**: FastAPI + SQLAlchemy + Alembic + Pydantic.
 - **Base de datos**: PostgreSQL.
-- **Visión por computador**: OpenCV (detección de la región de la placa, por
-  color y por bordes) + EasyOCR (lectura de caracteres) + corrección al
+- **Visión por computador**: YOLOv8 pre-entrenado (detección de la región de
+  la placa) + EasyOCR (lectura de caracteres, CRAFT + CRNN) + corrección al
   formato colombiano de placas (3 letras + 3 dígitos, o 3 letras + 2 dígitos +
   1 letra en motos).
 - **Infraestructura**: Docker, Docker Compose, Nginx como gateway/reverse proxy.
@@ -51,19 +54,17 @@ computador) o `http://localhost` desde el navegador de escritorio.
 
 ## Correr en modo desarrollo (más rápido para iterar mientras programamos)
 
-Frontend:
+Frontend (app móvil):
 ```bash
 cd frontend
 npm install
-npm run dev -- --host      # --host expone la IP de tu LAN para probar desde el celular
+npx expo start
 ```
-El servidor de dev sirve por **HTTPS con certificado autofirmado** (necesario
-para que el celular te deje usar la cámara fuera de `localhost`) — el
-navegador va a mostrar una advertencia de seguridad la primera vez, es
-esperado: "Avanzado" → "Continuar". `vite.config.ts` además hace de proxy de
-`/api` y `/media` hacia `http://127.0.0.1:8000`, así que en dev puedes dejar
-`VITE_API_URL` vacío en `frontend/.env.local` y todo funciona en el mismo
-origen aunque el backend corra en HTTP plano.
+Escanea el QR con **Expo Go** en el celular (mismo WiFi que el computador).
+La app deduce sola la IP del computador y llama al backend en
+`http://<ip>:8000`, no hay que configurar nada. Para probar en el navegador:
+`npx expo start --web` (abre `http://localhost:8081`). Más detalle en
+`frontend/README.md`.
 
 Backend (requiere Postgres corriendo, p.ej. `docker compose up db`):
 ```bash
@@ -84,7 +85,7 @@ todo se inyecta por variables de entorno al desplegar.
 
 1. En la instancia EC2: instalar Docker + Docker Compose, clonar el repo.
 2. Completar `.env` con `CORS_ORIGINS` apuntando al dominio/IP elástica real,
-   `VITE_API_URL` (vacío si se usa el gateway nginx, que es lo recomendado), y si
+   `EXPO_PUBLIC_API_URL` (vacío si se usa el gateway nginx, que es lo recomendado), y si
    se usa S3 para las imágenes: `STORAGE_BACKEND=s3`, `AWS_REGION`, `S3_BUCKET`
    (con un IAM Role adjunto a la instancia — no credenciales hardcodeadas).
 3. `docker compose up -d --build`.
@@ -94,8 +95,8 @@ todo se inyecta por variables de entorno al desplegar.
 ## Estructura
 
 ```
-frontend/   React + Vite + Tailwind + PWA
-backend/    FastAPI + SQLAlchemy + Alembic + pipeline CV/OCR + storage (local/S3)
+frontend/   Expo (React Native) + Expo Router — app móvil, también compila a web
+backend/    FastAPI + SQLAlchemy + Alembic + pipeline YOLO/OCR + storage (local/S3)
 nginx/      Config del gateway (reverse proxy a frontend y backend)
 docker-compose.yml
 ```

@@ -2,16 +2,19 @@
 .env
 backend/.env
 frontend/.env.local
+frontend/.env*.local
 
 # Python
 backend/.venv/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/media/
+backend/app/cv/weights/
 
 # Node (frontend has its own .gitignore too)
 frontend/node_modules/
 frontend/dist/
+frontend/.expo/
 
 # OS
 .DS_Store
